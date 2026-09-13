@@ -1,0 +1,109 @@
+# =============================================================================
+# .gitignore — Scalable Web Application with ALB and Auto Scaling
+# =============================================================================
+
+# ----- Terraform -----
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
+terraform.plan
+plan.out
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+
+# ----- Virtual Environments -----
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ----- Environment Files -----
+.env
+.env.*
+!.env.example
+*.env
+
+# ----- Secrets & Credentials -----
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials
+aws_credentials
+secrets.json
+secrets.yaml
+secrets.yml
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ----- Testing -----
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+junit.xml
+
+# ----- Docker -----
+docker-compose.override.yml
+
+# ----- Logs -----
+*.log
+logs/
+
+# ----- OS -----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
