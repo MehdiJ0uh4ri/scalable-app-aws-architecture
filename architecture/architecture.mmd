@@ -1,0 +1,112 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#FF9900', 'primaryTextColor': '#232F3E', 'primaryBorderColor': '#232F3E', 'lineColor': '#232F3E', 'secondaryColor': '#146EB4', 'tertiaryColor': '#fff'}}}%%
+flowchart TD
+    %% =====================================================================
+    %% USERS & EDGE
+    %% =====================================================================
+    USER["👤 End Users\n(Internet)"]
+    R53["🌐 Route 53\nDNS → tasks.example.com"]
+    CF["☁️ CloudFront\nGlobal CDN + TLS\nPriceClass_100"]
+    WAF_CF["🛡️ WAF (CloudFront)\nManaged Rules\nRate Limiting"]
+
+    %% =====================================================================
+    %% VPC BOUNDARY
+    %% =====================================================================
+    subgraph VPC ["🏢 VPC — 10.0.0.0/16 (eu-west-3)"]
+        direction TB
+
+        subgraph PUB ["🟢 PUBLIC TIER"]
+            direction LR
+            subgraph AZ_A_PUB ["eu-west-3a — 10.0.1.0/24"]
+                NAT_A["🔁 NAT GW A\n(Profile B)"]
+            end
+            subgraph AZ_B_PUB ["eu-west-3b — 10.0.2.0/24"]
+                NAT_B["🔁 NAT GW B\n(Profile B)"]
+            end
+            IGW["🌐 Internet\nGateway"]
+            ALB["⚖️ Application Load Balancer\nHTTP→HTTPS redirect\nHealth checks /health"]
+            WAF_ALB["🛡️ WAF (Regional)\nALB Protection"]
+        end
+
+        subgraph PRIV_APP ["🟡 PRIVATE APPLICATION TIER"]
+            direction LR
+            subgraph AZ_A_APP ["eu-west-3a — 10.0.11.0/24"]
+                EC2_A["🖥️ EC2 Instance A\nAmazon Linux 2023\nGunicorn + Flask\nNo Public IP"]
+            end
+            subgraph AZ_B_APP ["eu-west-3b — 10.0.12.0/24"]
+                EC2_B["🖥️ EC2 Instance B\nAmazon Linux 2023\nGunicorn + Flask\nNo Public IP"]
+            end
+            ASG["📈 Auto Scaling Group\nMin:2 Max:6\nTarget CPU 60%"]
+            SSM["🔑 SSM Session Manager\nNo SSH / No Bastion"]
+        end
+
+        subgraph PRIV_DB ["🔴 PRIVATE DATABASE TIER"]
+            direction LR
+            subgraph AZ_A_DB ["eu-west-3a — 10.0.21.0/24"]
+                RDS_PRIMARY["🗄️ RDS PostgreSQL\nPrimary\ndb.t3.micro"]
+            end
+            subgraph AZ_B_DB ["eu-west-3b — 10.0.22.0/24"]
+                RDS_STANDBY["🗄️ RDS PostgreSQL\nStandby (Multi-AZ)\nAuto Failover"]
+            end
+        end
+
+        subgraph VPC_EP ["🔗 VPC Interface Endpoints"]
+            EP_SSM["SSM"]
+            EP_SM["Secrets Manager"]
+            EP_CW["CloudWatch\nLogs/Metrics"]
+        end
+    end
+
+    %% =====================================================================
+    %% AWS SERVICES (outside VPC)
+    %% =====================================================================
+    subgraph AWS_SERVICES ["☁️ AWS Services"]
+        SM["🔐 Secrets Manager\nDB Credentials"]
+        CW["📊 CloudWatch\nMetrics + Logs\nDashboard + Alarms"]
+        SNS["📧 SNS\nEmail Alerts"]
+        IAM["🔒 IAM Role\nEC2 Instance Profile\nLeast Privilege"]
+    end
+
+    %% =====================================================================
+    %% TRAFFIC FLOW
+    %% =====================================================================
+    USER -->|"DNS Query"| R53
+    R53 -->|"CNAME"| CF
+    CF -->|"WAF inspect"| WAF_CF
+    WAF_CF -->|"Forward"| ALB
+    ALB -->|"WAF inspect"| WAF_ALB
+    ALB -->|"Round-robin\nHTTP port 5000"| EC2_A
+    ALB -->|"Round-robin\nHTTP port 5000"| EC2_B
+    IGW <-->|"Internet traffic"| CF
+    IGW <-->|"Public traffic"| ALB
+    EC2_A & EC2_B -->|"Outbound\n(Profile B)"| NAT_A
+    EC2_A & EC2_B -->|"Outbound\n(Profile B)"| NAT_B
+    NAT_A & NAT_B --> IGW
+    EC2_A & EC2_B -->|"SQL queries\nPort 5432"| RDS_PRIMARY
+    RDS_PRIMARY -.->|"Sync replication"| RDS_STANDBY
+    EC2_A & EC2_B -->|"Credential retrieval"| EP_SM
+    EC2_A & EC2_B -->|"Shell access"| EP_SSM
+    EC2_A & EC2_B -->|"Logs & metrics"| EP_CW
+    EP_SSM --> SSM
+    EP_SM --> SM
+    EP_CW --> CW
+    CW -->|"Alarm"| SNS
+    SNS -->|"Email"| USER
+    IAM -->|"Attached to"| EC2_A & EC2_B
+
+    %% =====================================================================
+    %% STYLES
+    %% =====================================================================
+    classDef internet fill:#232F3E,stroke:#FF9900,color:#fff
+    classDef edge fill:#8C4FFF,stroke:#232F3E,color:#fff
+    classDef public_subnet fill:#d4edda,stroke:#155724,color:#155724
+    classDef private_app fill:#fff3cd,stroke:#856404,color:#856404
+    classDef private_db fill:#f8d7da,stroke:#721c24,color:#721c24
+    classDef aws_service fill:#146EB4,stroke:#232F3E,color:#fff
+    classDef security fill:#dc3545,stroke:#721c24,color:#fff
+
+    class USER,R53 internet
+    class CF,WAF_CF,WAF_ALB,ALB,IGW edge
+    class EC2_A,EC2_B,ASG,NAT_A,NAT_B,SSM public_subnet
+    class RDS_PRIMARY,RDS_STANDBY private_db
+    class SM,CW,SNS,IAM aws_service
+    class EP_SSM,EP_SM,EP_CW private_app
