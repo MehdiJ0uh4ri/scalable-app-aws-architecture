@@ -1,0 +1,50 @@
+# =============================================================================
+# terraform/terraform.tfvars.example
+# Example variable values — copy to terraform.tfvars for deployment.
+# NEVER commit terraform.tfvars — it may contain sensitive values.
+# =============================================================================
+
+# ----- Global -----
+aws_region   = "eu-west-3"
+project_name = "manara-task-app"
+environment  = "dev"
+owner        = "your-name"
+
+# ----- Networking -----
+vpc_cidr                 = "10.0.0.0/16"
+availability_zones       = ["eu-west-3a", "eu-west-3b"]
+public_subnet_cidrs      = ["10.0.1.0/24", "10.0.2.0/24"]
+private_app_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
+private_db_subnet_cidrs  = ["10.0.21.0/24", "10.0.22.0/24"]
+
+# ----- NAT Gateway (CHARGEABLE — ~$32/month) -----
+nat_gateway_enabled = false # Set true only for Profile B
+single_nat_gateway  = true  # Cost-saving option
+
+# ----- Compute -----
+ec2_instance_type    = "t3.micro"
+app_port             = 5000
+
+# ----- Auto Scaling -----
+asg_min_size         = 2
+asg_max_size         = 6
+asg_desired_capacity = 2
+asg_target_cpu       = 60
+
+# ----- Database (CHARGEABLE) -----
+db_engine          = "postgres"
+db_engine_version  = "16.3"
+db_instance_class  = "db.t3.micro"
+db_allocated_storage = 20
+db_name            = "taskdb"
+db_username        = "taskadmin"
+db_password        = "CHANGE_ME_USE_SECRETS_MANAGER"  # <-- Replace before deploy
+db_multi_az        = false  # Set true for Profile B production
+
+# ----- DNS (optional) -----
+domain_name   = ""  # e.g. "example.com" — leave empty to skip DNS
+app_subdomain = "tasks"
+
+# ----- Monitoring -----
+alarm_email                   = ""  # e.g. "you@example.com"
+cloudwatch_log_retention_days = 7
