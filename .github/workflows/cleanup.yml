@@ -1,0 +1,124 @@
+name: Manara AWS Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Choose inventory-only or destructive cleanup'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - 'dry-run'
+          - 'delete'
+      confirmation:
+        description: 'For delete only, enter DELETE-MANARA-DEV exactly'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tf-deploy-lock
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate cleanup script (mock AWS only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Require Main Branch
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Cleanup may only run from the main branch."
+            exit 1
+          fi
+
+      - name: Validate Shell Syntax
+        run: bash -n scripts/aws-cleanup.sh tests/aws-cleanup.test.sh
+
+      - name: Run Mocked Cleanup Tests
+        run: bash tests/aws-cleanup.test.sh
+
+  dry-run:
+    name: Inventory Manara resources (read-only)
+    needs: validate
+    if: inputs.action == 'dry-run'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: eu-west-3
+      CLEANUP_ACTION: dry-run
+      DELETE_CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-3
+
+      - name: Verify AWS Account
+        shell: bash
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "$account_id" != "412514130471" ]]; then
+            echo "::error::Refusing cleanup in AWS account ${account_id}."
+            exit 1
+          fi
+          echo "Verified expected AWS account."
+
+      - name: Verify Cleanup Tools
+        run: |
+          aws --version
+          jq --version
+
+      - name: Run Read-Only Inventory
+        run: bash scripts/aws-cleanup.sh
+
+  delete:
+    name: Delete verified Manara resources
+    needs: validate
+    if: inputs.action == 'delete'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: eu-west-3
+      CLEANUP_ACTION: delete
+      DELETE_CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-3
+
+      - name: Verify AWS Account
+        shell: bash
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "$account_id" != "412514130471" ]]; then
+            echo "::error::Refusing cleanup in AWS account ${account_id}."
+            exit 1
+          fi
+          echo "Verified expected AWS account."
+
+      - name: Verify Cleanup Tools
+        run: |
+          aws --version
+          jq --version
+
+      - name: Run Verified Cleanup
+        run: bash scripts/aws-cleanup.sh
