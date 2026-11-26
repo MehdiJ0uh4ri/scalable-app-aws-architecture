@@ -8,6 +8,12 @@ This document provides an in-depth explanation of the architectural decisions, t
 
 ## 1. Multi-Tier Layered Architecture
 
+### Visual Architecture Topology (Draw.io AWS Standard)
+
+![AWS Architecture Diagram](../architecture/architecture.svg)
+
+> 💡 **Editable Source:** [`../architecture/architecture.drawio`](../architecture/architecture.drawio) — Open directly in [app.diagrams.net](https://app.diagrams.net) or in VS Code with the Draw.io extension (`hediet.vscode-drawio`).
+
 The application implements a classic **Three-Tier Architecture** distributed across two Availability Zones (`eu-west-3a` and `eu-west-3b`):
 
 ```

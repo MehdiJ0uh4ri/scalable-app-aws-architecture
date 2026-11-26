@@ -22,6 +22,7 @@ It demonstrates end-to-end implementation of an EC2-based web tier that is resil
 | **Security & Edge** | AWS WAFv2 (Global & Regional), Amazon CloudFront, AWS Secrets Manager |
 | **Management & Shell** | AWS Systems Manager (SSM) Session Manager (Zero Bastion / Zero SSH Key) |
 | **Operating System** | Target Host: Amazon Linux 2023; Development: Windows 11 |
+| **Architecture Diagrams** | Draw.io SVG ([`architecture.svg`](../architecture/architecture.svg)) & Draw.io Model ([`architecture.drawio`](../architecture/architecture.drawio)) |
 
 ---
 

@@ -10,6 +10,8 @@
 crash.log
 crash.*.log
 *.tfvars
+*.tfvars.*
+*.local
 !*.tfvars.example
 override.tf
 override.tf.json
@@ -44,6 +46,12 @@ share/python-wheels/
 MANIFEST
 *.manifest
 *.spec
+
+# ----- Flask Instance & Local Databases -----
+instance/
+*.db
+*.sqlite
+*.sqlite3
 
 # ----- Virtual Environments -----
 .venv/

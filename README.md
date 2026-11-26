@@ -62,6 +62,12 @@ A development team needs to deploy a web application that can:
 
 ## 3. Architecture Overview
 
+### AWS Architecture Diagram (Draw.io Style)
+
+![AWS Architecture Diagram](architecture/architecture.svg)
+
+> 💡 **Interactive Diagram File:** [`architecture/architecture.drawio`](architecture/architecture.drawio) — Open directly at [app.diagrams.net](https://app.diagrams.net) or in VS Code with the Draw.io Integration extension (`hediet.vscode-drawio`).
+
 ```
   Users → Route 53 → CloudFront (WAF) → ALB (WAF) → EC2 ASG → RDS PostgreSQL
 ```
