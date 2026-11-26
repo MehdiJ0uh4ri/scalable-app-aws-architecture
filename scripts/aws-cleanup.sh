@@ -1128,6 +1128,7 @@ delete_record() {
       ;;
     ec2-instance)
       aws_cli ec2 terminate-instances --region "$region" --instance-ids "$identifier" >/dev/null || return 1
+      log "Waiting for EC2 instance ${identifier} to terminate."
       aws_cli ec2 wait instance-terminated --region "$region" --instance-ids "$identifier" || return 1
       ;;
     ebs-volume)
@@ -1139,11 +1140,13 @@ delete_record() {
       fi
       volume_state="$(jq -r '.Volumes[0].State // ""' <<< "$volume_response")"
       if [[ "$volume_state" == "deleting" ]]; then
+        log "Waiting for EBS volume ${identifier} to finish deleting."
         aws_cli ec2 wait volume-deleted --region "$region" --volume-ids "$identifier" || return 1
         return 0
       fi
       [[ "$volume_state" == "available" ]] || return 1
       aws_cli ec2 delete-volume --region "$region" --volume-id "$identifier" >/dev/null || return 1
+      log "Waiting for EBS volume ${identifier} to finish deleting."
       aws_cli ec2 wait volume-deleted --region "$region" --volume-ids "$identifier" || return 1
       ;;
     launch-template)
@@ -1157,6 +1160,7 @@ delete_record() {
       ;;
     load-balancer)
       aws_cli elbv2 delete-load-balancer --region "$region" --load-balancer-arn "$identifier" >/dev/null || return 1
+      log "Waiting for load balancer ${identifier} to be deleted."
       aws_cli elbv2 wait load-balancers-deleted --region "$region" --load-balancer-arns "$identifier" || return 1
       ;;
     target-group)
@@ -1180,6 +1184,7 @@ delete_record() {
       fi
       aws_cli rds delete-db-instance --region "$region" --db-instance-identifier "$identifier" \
         --skip-final-snapshot --delete-automated-backups >/dev/null || return 1
+      log "Waiting for RDS instance ${identifier} to be deleted; AWS may take several minutes."
       aws_cli rds wait db-instance-deleted --region "$region" --db-instance-identifier "$identifier" || return 1
       ;;
     rds-subnet-group)
@@ -1214,6 +1219,7 @@ delete_record() {
       ;;
     nat-gateway)
       aws_cli ec2 delete-nat-gateway --region "$region" --nat-gateway-id "$identifier" >/dev/null || return 1
+      log "Waiting for NAT Gateway ${identifier} to be deleted."
       aws_cli ec2 wait nat-gateway-deleted --region "$region" --nat-gateway-ids "$identifier" || return 1
       ;;
     elastic-ip)
@@ -1336,12 +1342,23 @@ cleanup_cloudfront_temp_file() {
 delete_cloudfront_distribution() {
   local id="$1" response etag config temp_file web_acl
   response="$(aws_cli cloudfront get-distribution-config --region "$GLOBAL_REGION" --id "$id" --output json)"
-  etag="$(jq -r '.ETag' <<< "$response")"
+  if ! etag="$(jq -er '.ETag | select(type == "string" and length > 0)' <<< "$response")" ||
+     ! jq -e '.DistributionConfig | type == "object"' <<< "$response" >/dev/null; then
+    log "::error::CloudFront returned an invalid distribution config for ${id}; refusing to update it."
+    return 1
+  fi
   web_acl="$(jq -r '.DistributionConfig.WebACLId // ""' <<< "$response")"
-  config="$(jq -c --argjson webAclArnList "$(printf '%s\n' "${WAF_CLOUDFRONT[@]}" | jq -R . | jq -s .)" \
-    '.DistributionConfig
+  if ! config="$(jq -ce --argjson webAclArnList \
+    "$(printf '%s\n' "${WAF_CLOUDFRONT[@]}" | jq -R . | jq -s .)" \
+    '.DistributionConfig as $distributionConfig
+     | $distributionConfig.WebACLId as $attachedWebAcl
+     | $distributionConfig
      | .Enabled = false
-     | if ($webAclArnList | index(.WebACLId)) then .WebACLId = "" else . end' <<< "$response")"
+     | if ($webAclArnList | index($attachedWebAcl)) then .WebACLId = "" else . end' \
+    <<< "$response")"; then
+    log "::error::Could not safely prepare the CloudFront config for ${id}; refusing to update it."
+    return 1
+  fi
   temp_file="$(mktemp)"
   CLOUDFRONT_TEMP_FILE="$temp_file"
   trap '[[ -z "$CLOUDFRONT_TEMP_FILE" ]] || rm -f -- "$CLOUDFRONT_TEMP_FILE"' EXIT
@@ -1358,12 +1375,37 @@ delete_cloudfront_distribution() {
   if [[ -n "$web_acl" ]] && printf '%s\n' "${WAF_CLOUDFRONT[@]}" | grep -Fxq "$web_acl"; then
     DELETED+=("cloudfront-waf-association"$'\t'"$GLOBAL_REGION"$'\t'"$id")
   fi
-  aws_cli cloudfront wait distribution-deployed --region "$GLOBAL_REGION" --id "$id" || return 1
+  log "CloudFront distribution ${id} is disabled; waiting for deployment before deleting it."
+  wait_for_cloudfront_deployed "$id" || return 1
   response="$(aws_cli cloudfront get-distribution-config --region "$GLOBAL_REGION" --id "$id" --output json)"
-  etag="$(jq -r '.ETag' <<< "$response")"
+  etag="$(jq -er '.ETag | select(type == "string" and length > 0)' <<< "$response")" || return 1
   aws_cli cloudfront delete-distribution --region "$GLOBAL_REGION" --id "$id" --if-match "$etag" >/dev/null || return 1
+  log "CloudFront distribution ${id} deletion submitted; waiting for it to disappear."
   wait_for_cloudfront_absent "$id" || return 1
   : "$web_acl"
+}
+
+wait_for_cloudfront_deployed() {
+  local id="$1" attempt response status
+  for attempt in {1..35}; do
+    if ! response="$(aws_cli cloudfront get-distribution --region "$GLOBAL_REGION" \
+      --id "$id" --output json 2>&1)"; then
+      log "::error::Could not check CloudFront distribution ${id} deployment status: ${response}"
+      return 1
+    fi
+    if ! status="$(jq -er '.Distribution.Status | select(type == "string" and length > 0)' \
+      <<< "$response")"; then
+      log "::error::CloudFront returned no deployment status for ${id}."
+      return 1
+    fi
+    [[ "$status" == "Deployed" ]] && return 0
+    if (( attempt % 5 == 0 )); then
+      log "CloudFront distribution ${id} is still ${status} (${attempt}/35 polls)."
+    fi
+    (( attempt == 35 )) || sleep 60
+  done
+  log "::error::Timed out waiting for CloudFront distribution ${id} to deploy."
+  return 1
 }
 
 wait_for_cloudfront_absent() {
@@ -1376,6 +1418,9 @@ wait_for_cloudfront_absent() {
       return 0
     else
       return 1
+    fi
+    if (( attempt % 5 == 0 )); then
+      log "CloudFront distribution ${id} is still deleting (${attempt}/40 polls)."
     fi
   done
   return 1
@@ -1392,6 +1437,9 @@ wait_for_vpc_endpoint_absent() {
       return 1
     fi
     [[ "$count" -eq 0 ]] && return 0
+    if (( attempt % 5 == 0 )); then
+      log "VPC endpoint ${id} is still deleting (${attempt}/40 polls)."
+    fi
     sleep 15
   done
   return 1
@@ -1408,6 +1456,9 @@ wait_for_asg_absent() {
       return 1
     fi
     [[ "$count" -eq 0 ]] && return 0
+    if (( attempt % 5 == 0 )); then
+      log "Auto Scaling group ${name} is still deleting (${attempt}/40 polls)."
+    fi
     sleep 15
   done
   return 1
@@ -1429,6 +1480,9 @@ wait_for_managed_enis_absent() {
       done
     done < <(jq -c '.NetworkInterfaces[]?' <<< "$response")
     [[ "$still_present" == false ]] && return 0
+    if (( attempt % 5 == 0 )); then
+      log "Waiting for Manara network interfaces to detach/delete (${attempt}/40 polls)."
+    fi
     sleep 15
   done
   return 1
@@ -1540,10 +1594,13 @@ run_type() {
   for row in "${PLAN[@]}"; do
     IFS=$'\t' read -r kind region identifier <<< "$row"
     [[ "$kind" == "$wanted" ]] || continue
+    log "Deleting ${kind} in ${region}: ${identifier}"
     if delete_record "$kind" "$region" "$identifier"; then
       DELETED+=("${kind}"$'\t'"${region}"$'\t'"${identifier}")
+      log "Deleted ${kind} in ${region}: ${identifier}"
     else
       fail_resource "$kind" "$region" "$identifier" "AWS deletion API or bounded waiter failed"
+      log "::error::Deletion failed for ${kind} in ${region}: ${identifier}"
     fi
   done
 }
@@ -1810,4 +1867,6 @@ main() {
   log "Cleanup completed and the verified Manara VPC is absent."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

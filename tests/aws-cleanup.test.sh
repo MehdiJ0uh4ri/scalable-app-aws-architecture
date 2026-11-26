@@ -116,6 +116,60 @@ case "$2" in
     printf '%s\n' "$*" >> "$MOCK_AWS_MUTATION_LOG"
     ;;
 esac
+
+if [[ "$1" == "cloudfront" && "$2" == "get-distribution-config" &&
+      "${MOCK_AWS_INVENTORY:-}" == "cloudfront-delete" ]]; then
+  if [[ -f "$MOCK_AWS_CONFIG_READS" ]]; then
+    reads="$(<"$MOCK_AWS_CONFIG_READS")"
+  else
+    reads=0
+  fi
+  reads=$((reads + 1))
+  printf '%s\n' "$reads" > "$MOCK_AWS_CONFIG_READS"
+  if [[ "$reads" -eq 1 ]]; then
+    printf '%s\n' '{"ETag":"ETAG-1","DistributionConfig":{"Enabled":true,"WebACLId":"arn:aws:wafv2:us-east-1:412514130471:global/webacl/manara-task-app-dev-waf-cf/acl-id"}}'
+  else
+    printf '%s\n' '{"ETag":"ETAG-2","DistributionConfig":{"Enabled":false,"WebACLId":""}}'
+  fi
+  exit 0
+fi
+
+if [[ "$1" == "cloudfront" && "$2" == "update-distribution" &&
+      "${MOCK_AWS_INVENTORY:-}" == "cloudfront-delete" ]]; then
+  config_file=""
+  while (($#)); do
+    if [[ "$1" == "--distribution-config" ]]; then
+      config_file="${2#file://}"
+      break
+    fi
+    shift
+  done
+  if [[ -z "$config_file" ]] || ! jq -e '.Enabled == false and .WebACLId == ""' \
+    "$config_file" >/dev/null; then
+    printf 'Mock rejected invalid CloudFront distribution config.\n' >&2
+    exit 1
+  fi
+  printf '{}\n'
+  exit 0
+fi
+
+if [[ "$1" == "cloudfront" && "$2" == "get-distribution" &&
+      "${MOCK_AWS_INVENTORY:-}" == "cloudfront-delete" ]]; then
+  if [[ -f "$MOCK_AWS_DIST_READS" ]]; then
+    reads="$(<"$MOCK_AWS_DIST_READS")"
+  else
+    reads=0
+  fi
+  reads=$((reads + 1))
+  printf '%s\n' "$reads" > "$MOCK_AWS_DIST_READS"
+  if [[ "$reads" -eq 1 ]]; then
+    printf '%s\n' '{"Distribution":{"Status":"Deployed"}}'
+    exit 0
+  fi
+  printf 'NoSuchDistribution: distribution is absent\n' >&2
+  exit 1
+fi
+
 printf '{}\n'
 MOCK_AWS
 chmod +x "$TEST_TMP/bin/aws"
@@ -195,6 +249,33 @@ test_network_associations_and_terraform_tags_are_recognized() {
   assert_no_mutations
 }
 
+test_cloudfront_waf_detach_uses_valid_config_before_delete() {
+  : > "$MOCK_AWS_CALL_LOG"
+  : > "$MOCK_AWS_MUTATION_LOG"
+  rm -f -- "$TEST_TMP/cloudfront-config-reads"
+  rm -f -- "$TEST_TMP/cloudfront-distribution-reads"
+  if ! env MOCK_AWS_INVENTORY=cloudfront-delete \
+    MOCK_AWS_CONFIG_READS="$TEST_TMP/cloudfront-config-reads" \
+    MOCK_AWS_DIST_READS="$TEST_TMP/cloudfront-distribution-reads" \
+    CLEANUP_SCRIPT="$REPO_ROOT/scripts/aws-cleanup.sh" \
+    bash -c '
+      source "$CLEANUP_SCRIPT"
+      WAF_CLOUDFRONT=("arn:aws:wafv2:us-east-1:412514130471:global/webacl/manara-task-app-dev-waf-cf/acl-id")
+      delete_cloudfront_distribution "E123EXAMPLE"
+      expected="$(printf "cloudfront-waf-association\tus-east-1\tE123EXAMPLE")"
+      [[ "${DELETED[0]:-}" == "$expected" ]]
+    ' > "$TEST_TMP/cloudfront-delete.log" 2>&1; then
+    cat "$TEST_TMP/cloudfront-delete.log" >&2
+    return 1
+  fi
+  grep -Fq 'cloudfront update-distribution' "$MOCK_AWS_MUTATION_LOG"
+  grep -Fq 'cloudfront delete-distribution' "$MOCK_AWS_MUTATION_LOG"
+  update_line="$(grep -n 'cloudfront update-distribution' "$MOCK_AWS_MUTATION_LOG" | cut -d: -f1)"
+  delete_line="$(grep -n 'cloudfront delete-distribution' "$MOCK_AWS_MUTATION_LOG" | cut -d: -f1)"
+  [[ "$update_line" -lt "$delete_line" ]]
+  [[ "$(wc -l < "$MOCK_AWS_MUTATION_LOG")" -eq 2 ]]
+}
+
 test_conflicting_owner_tags_block_dry_run() {
   : > "$MOCK_AWS_CALL_LOG"
   : > "$MOCK_AWS_MUTATION_LOG"
@@ -237,6 +318,7 @@ run_test "empty inventory dry-run is read-only" test_empty_dry_run_is_read_only
 run_test "wrong account aborts before mutations" test_wrong_account_aborts_before_mutations
 run_test "owned VPC inventory remains read-only" test_owned_vpc_is_listed_without_mutations
 run_test "network associations and Terraform tags are recognized" test_network_associations_and_terraform_tags_are_recognized
+run_test "CloudFront WAF detach uses valid config before delete" test_cloudfront_waf_detach_uses_valid_config_before_delete
 run_test "conflicting owner tags block dry-run" test_conflicting_owner_tags_block_dry_run
 run_test "delete requires exact confirmation" test_delete_requires_exact_confirmation
 run_test "confirmed empty cleanup is a no-op" test_confirmed_empty_cleanup_is_a_noop
