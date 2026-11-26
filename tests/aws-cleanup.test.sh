@@ -34,6 +34,19 @@ VPC_JSON
 fi
 
 if [[ "$1" == "ec2" && "$2" == "describe-vpcs" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  cat <<'VPC_JSON'
+{"Vpcs":[{"VpcId":"vpc-0c52f6858b43ab34f","Tags":[
+  {"Key":"Name","Value":"manara-task-app-dev-vpc"},
+  {"Key":"Project","Value":"manara-task-app"},
+  {"Key":"Environment","Value":"dev"},
+  {"Key":"ManagedBy","Value":"Terraform"}
+]}]}
+VPC_JSON
+  exit 0
+fi
+
+if [[ "$1" == "ec2" && "$2" == "describe-vpcs" &&
       "${MOCK_AWS_INVENTORY:-}" == "wrong-owner" ]]; then
   cat <<'VPC_JSON'
 {"Vpcs":[{"VpcId":"vpc-0c52f6858b43ab34f","Tags":[
@@ -43,6 +56,57 @@ if [[ "$1" == "ec2" && "$2" == "describe-vpcs" &&
   {"Key":"ManagedBy","Value":"Terraform"}
 ]}]}
 VPC_JSON
+  exit 0
+fi
+
+if [[ "$1" == "ec2" && "$2" == "describe-subnets" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  cat <<'SUBNET_JSON'
+{"Subnets":[{"SubnetId":"subnet-00000000000000001","VpcId":"vpc-0c52f6858b43ab34f","Tags":[
+  {"Key":"Name","Value":"manara-task-app-dev-public-eu-west-3a"},
+  {"Key":"Project","Value":"manara-task-app"},
+  {"Key":"Environment","Value":"dev"},
+  {"Key":"ManagedBy","Value":"Terraform"}
+]}]}
+SUBNET_JSON
+  exit 0
+fi
+
+if [[ "$1" == "ec2" && "$2" == "describe-route-tables" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  cat <<'ROUTE_TABLE_JSON'
+{"RouteTables":[{"RouteTableId":"rtb-00000000000000001","VpcId":"vpc-0c52f6858b43ab34f","Tags":[
+  {"Key":"Name","Value":"manara-task-app-dev-rt-public"},
+  {"Key":"Project","Value":"manara-task-app"},
+  {"Key":"Environment","Value":"dev"},
+  {"Key":"ManagedBy","Value":"Terraform"}
+],"Routes":[{"DestinationCidrBlock":"10.0.0.0/16","GatewayId":"local"}],
+"Associations":[{"RouteTableAssociationId":"rtbassoc-00000000000000001","SubnetId":"subnet-00000000000000001","Main":false}]}]}
+ROUTE_TABLE_JSON
+  exit 0
+fi
+
+if [[ "$1" == "logs" && "$2" == "describe-log-groups" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  printf '%s\n' '{"logGroups":[{"logGroupName":"/aws/ec2/manara-task-app-dev/application","logGroupArn":"arn:aws:logs:eu-west-3:412514130471:log-group:/aws/ec2/manara-task-app-dev/application:*"}]}'
+  exit 0
+fi
+
+if [[ "$1" == "logs" && "$2" == "list-tags-for-resource" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  printf '%s\n' '{"tags":{"Name":"manara-task-app-dev-app-logs"}}'
+  exit 0
+fi
+
+if [[ "$1" == "cloudwatch" && "$2" == "describe-alarms" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  printf '%s\n' '{"MetricAlarms":[{"AlarmName":"manara-task-app-dev-alb-5xx-errors","AlarmArn":"arn:aws:cloudwatch:eu-west-3:412514130471:alarm:manara-task-app-dev-alb-5xx-errors"}]}'
+  exit 0
+fi
+
+if [[ "$1" == "cloudwatch" && "$2" == "list-tags-for-resource" &&
+      "${MOCK_AWS_INVENTORY:-}" == "owned-network" ]]; then
+  printf '%s\n' '{"Tags":[{"Key":"Name","Value":"manara-task-app-dev-alarm-alb-5xx"}]}'
   exit 0
 fi
 
@@ -116,6 +180,21 @@ test_owned_vpc_is_listed_without_mutations() {
   assert_no_mutations
 }
 
+test_network_associations_and_terraform_tags_are_recognized() {
+  : > "$MOCK_AWS_CALL_LOG"
+  : > "$MOCK_AWS_MUTATION_LOG"
+  if ! env MOCK_AWS_INVENTORY=owned-network AWS_REGION=eu-west-3 \
+    CLEANUP_ACTION=dry-run bash "$REPO_ROOT/scripts/aws-cleanup.sh" \
+    > "$TEST_TMP/owned-network.log" 2>&1; then
+    cat "$TEST_TMP/owned-network.log" >&2
+    return 1
+  fi
+  grep -Fq 'PLANNED      route-table-association eu-west-3  rtbassoc-00000000000000001' "$TEST_TMP/owned-network.log"
+  grep -Fq 'PLANNED      log-group              eu-west-3  /aws/ec2/manara-task-app-dev/application' "$TEST_TMP/owned-network.log"
+  grep -Fq 'PLANNED      alarm                  eu-west-3  manara-task-app-dev-alb-5xx-errors' "$TEST_TMP/owned-network.log"
+  assert_no_mutations
+}
+
 test_conflicting_owner_tags_block_dry_run() {
   : > "$MOCK_AWS_CALL_LOG"
   : > "$MOCK_AWS_MUTATION_LOG"
@@ -157,6 +236,7 @@ test_confirmed_empty_cleanup_is_a_noop() {
 run_test "empty inventory dry-run is read-only" test_empty_dry_run_is_read_only
 run_test "wrong account aborts before mutations" test_wrong_account_aborts_before_mutations
 run_test "owned VPC inventory remains read-only" test_owned_vpc_is_listed_without_mutations
+run_test "network associations and Terraform tags are recognized" test_network_associations_and_terraform_tags_are_recognized
 run_test "conflicting owner tags block dry-run" test_conflicting_owner_tags_block_dry_run
 run_test "delete requires exact confirmation" test_delete_requires_exact_confirmation
 run_test "confirmed empty cleanup is a no-op" test_confirmed_empty_cleanup_is_a_noop

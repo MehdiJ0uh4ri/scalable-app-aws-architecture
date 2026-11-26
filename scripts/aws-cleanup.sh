@@ -77,19 +77,34 @@ add_plan() {
 
 skip_resource() {
   local kind="$1" region="$2" identifier="$3" reason="$4" blocks="${5:-false}"
-  SKIPPED+=("${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}")
+  local row existing
+  row="${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}"
+  for existing in "${SKIPPED[@]}"; do
+    [[ "$existing" != "$row" ]] || return 0
+  done
+  SKIPPED+=("$row")
   [[ "$blocks" != "true" ]] || BLOCKERS=$((BLOCKERS + 1))
 }
 
 fail_resource() {
   local kind="$1" region="$2" identifier="$3" reason="$4"
-  FAILED+=("${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}")
+  local row existing
+  row="${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}"
+  for existing in "${FAILED[@]}"; do
+    [[ "$existing" != "$row" ]] || return 0
+  done
+  FAILED+=("$row")
   BLOCKERS=$((BLOCKERS + 1))
 }
 
 unsupported_resource() {
   local kind="$1" region="$2" identifier="$3" reason="$4"
-  UNSUPPORTED+=("${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}")
+  local row existing
+  row="${kind}"$'\t'"${region}"$'\t'"${identifier}"$'\t'"${reason}"
+  for existing in "${UNSUPPORTED[@]}"; do
+    [[ "$existing" != "$row" ]] || return 0
+  done
+  UNSUPPORTED+=("$row")
   BLOCKERS=$((BLOCKERS + 1))
 }
 
@@ -117,6 +132,15 @@ normalize_tags() {
 tag_value() {
   local tags="$1" key="$2"
   jq -r --arg key "$key" '[.[] | select((.Key // .key) == $key) | (.Value // .value)][0] // ""' <<< "$tags"
+}
+
+array_contains() {
+  local needle="$1" candidate
+  shift
+  for candidate in "$@"; do
+    [[ "$candidate" != "$needle" ]] || return 0
+  done
+  return 1
 }
 
 # Exact API identifiers and verified parent relationships act as the allowlist
@@ -261,7 +285,7 @@ discover_compute_and_network() {
           local association_id association_subnet
           association_id="$(jq -r '.RouteTableAssociationId // ""' <<< "$association")"
           association_subnet="$(jq -r '.SubnetId // ""' <<< "$association")"
-          if [[ -n "$association_id" && " ${SUBNETS[*]} " == *" ${association_subnet} "* ]]; then
+          if [[ -n "$association_id" ]] && array_contains "$association_subnet" "${SUBNETS[@]}"; then
             add_plan "route-table-association" "$MAIN_REGION" "$association_id"
           else
             skip_resource "route-table-association" "$MAIN_REGION" "${association_id:-$id}" \
@@ -561,7 +585,7 @@ validate_route_tables() {
       [[ "$(jq -r '.Main // false' <<< "$association")" != "true" ]] || continue
       subnet_id="$(jq -r '.SubnetId // ""' <<< "$association")"
       association_id="$(jq -r '.RouteTableAssociationId // ""' <<< "$association")"
-      if [[ -z "$subnet_id" || " ${SUBNETS[*]} " != *" ${subnet_id} "* ]]; then
+      if [[ -z "$subnet_id" ]] || ! array_contains "$subnet_id" "${SUBNETS[@]}"; then
         skip_resource "route-table-association" "$MAIN_REGION" "${association_id:-$route_table_id}" \
           "association is not to a verified Manara subnet" true
       fi
@@ -718,7 +742,17 @@ discover_databases_and_logs() {
     "/aws/rds/instance/${NAME_PREFIX}-postgres/postgresql"
     "/aws/rds/instance/${NAME_PREFIX}-postgres/upgrade"
   )
-  for name in "${log_groups[@]}"; do
+  local -a log_tag_names=(
+    "${NAME_PREFIX}-app-logs"
+    "${NAME_PREFIX}-access-logs"
+    "${NAME_PREFIX}-user-data-logs"
+    "${NAME_PREFIX}-rds-logs"
+    ""
+  )
+  local log_index expected_tag_name
+  for log_index in "${!log_groups[@]}"; do
+    name="${log_groups[$log_index]}"
+    expected_tag_name="${log_tag_names[$log_index]}"
     response="$(aws_cli logs describe-log-groups --region "$MAIN_REGION" \
       --log-group-name-prefix "$name" --output json)"
     item="$(jq -c --arg name "$name" 'first(.logGroups[]? | select(.logGroupName == $name)) // empty' <<< "$response")"
@@ -727,7 +761,7 @@ discover_databases_and_logs() {
       log_group_arn="arn:aws:logs:${MAIN_REGION}:${EXPECTED_ACCOUNT_ID}:log-group:${name}"
       tags="$(aws_cli logs list-tags-for-resource --region "$MAIN_REGION" \
         --resource-arn "$log_group_arn" --output json)"
-      add_named_if_owned "log-group" "$MAIN_REGION" "$tags" "$name" "$name" true
+      add_named_if_owned "log-group" "$MAIN_REGION" "$tags" "$name" "$expected_tag_name" true
     fi
   done
 
@@ -744,9 +778,18 @@ discover_databases_and_logs() {
     [[ -n "$item" ]] || continue
     name="$(jq -r '.AlarmName' <<< "$item")"
     arn="$(jq -r '.AlarmArn' <<< "$item")"
+    local expected_alarm_tag
+    case "$name" in
+      "${NAME_PREFIX}-high-cpu") expected_alarm_tag="${NAME_PREFIX}-alarm-high-cpu" ;;
+      "${NAME_PREFIX}-alb-5xx-errors") expected_alarm_tag="${NAME_PREFIX}-alarm-alb-5xx" ;;
+      "${NAME_PREFIX}-unhealthy-targets") expected_alarm_tag="${NAME_PREFIX}-alarm-unhealthy-targets" ;;
+      "${NAME_PREFIX}-rds-high-cpu") expected_alarm_tag="${NAME_PREFIX}-alarm-rds-cpu" ;;
+      "${NAME_PREFIX}-rds-low-storage") expected_alarm_tag="${NAME_PREFIX}-alarm-rds-storage" ;;
+      *) continue ;;
+    esac
     tags="$(aws_cli cloudwatch list-tags-for-resource --region "$MAIN_REGION" \
       --resource-arn "$arn" --output json)"
-    add_named_if_owned "alarm" "$MAIN_REGION" "$tags" "$name" "$name" true
+    add_named_if_owned "alarm" "$MAIN_REGION" "$tags" "$name" "$expected_alarm_tag" true
   done < <(jq -c '.MetricAlarms[]?' <<< "$response")
 
   name="${NAME_PREFIX}-dashboard"
@@ -1708,7 +1751,7 @@ print_summary() {
   print_rows "SKIPPED" "${SKIPPED[@]}"
   print_rows "UNSUPPORTED" "${UNSUPPORTED[@]}"
   print_rows "FAILED" "${FAILED[@]}"
-  log "Planned: ${INITIAL_PLAN_COUNT} | Deleted: ${#DELETED[@]} | Skipped: ${#SKIPPED[@]} | Unsupported: ${#UNSUPPORTED[@]} | Failed: ${#FAILED[@]}"
+  log "Planned: ${INITIAL_PLAN_COUNT} | Deleted: ${#DELETED[@]} | Skipped: ${#SKIPPED[@]} | Unsupported: ${#UNSUPPORTED[@]} | Failed: ${#FAILED[@]} | Blockers: ${BLOCKERS}"
 }
 
 main() {
@@ -1744,7 +1787,10 @@ main() {
   if [[ "$ACTION" == "dry-run" ]]; then
     log "Dry-run complete: no AWS mutation APIs were called."
     print_summary
-    [[ "$BLOCKERS" -eq 0 ]] || exit 1
+    if [[ "$BLOCKERS" -gt 0 ]]; then
+      log "::error::Dry-run found ${BLOCKERS} ownership or dependency blocker(s); deletion is disabled until they are resolved."
+      exit 1
+    fi
     exit 0
   fi
 
