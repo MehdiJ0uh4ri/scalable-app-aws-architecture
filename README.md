@@ -274,11 +274,19 @@ pytest -v
 
 ---
 
-## 11. Deployment Guide
+## 11. Deployment Guide & CI/CD
 
 > ⚠️ **NEVER run `terraform apply` without reviewing the plan and cost estimate first.**
 
-See [documentation/deployment-guide.md](documentation/deployment-guide.md) for the complete step-by-step guide.
+### Option A: Secure GitHub Actions CI/CD (Recommended)
+This repository includes a production-style **Shift-Left Security** CI/CD pipeline:
+- **`ci.yml`**: Triggers on pull requests to run **Gitleaks** (secret detection), **Bandit** (Python SAST), **pip-audit** (dependency CVE scanning), **Trivy** (IaC security), and automated **Pytest** (with minimum 80% coverage gate).
+- **`deploy.yml`**: Manual workflow dispatch with GitHub Environment approval gates (`production`), architecture profile selector (`Profile A` vs `Profile B`), and automated post-deployment health check probes.
+
+See [documentation/cicd-pipeline.md](documentation/cicd-pipeline.md) for GitHub Secrets and pipeline configuration.
+
+### Option B: Local Terraform CLI
+See [documentation/deployment-guide.md](documentation/deployment-guide.md) for the complete manual step-by-step guide.
 
 **Quick reference — Terraform:**
 ```powershell
@@ -359,6 +367,12 @@ Verify in the AWS Console that the following are removed:
 manara-aws-project-app/
 ├── README.md
 ├── .gitignore
+├── .gitleaks.toml               ← Shift-Left secret scanning config
+│
+├── .github/
+│   └── workflows/
+│       ├── ci.yml               ← Shift-Left security, linting, tests & plan
+│       └── deploy.yml           ← CD pipeline with environment approval gates
 │
 ├── application/
 │   ├── app/
@@ -420,6 +434,7 @@ manara-aws-project-app/
     ├── network-design.md
     ├── security-design.md
     ├── deployment-guide.md
+    ├── cicd-pipeline.md
     ├── cost-estimation.md
     └── testing-results.md
 ```
@@ -430,7 +445,6 @@ manara-aws-project-app/
 
 | Limitation | Future Improvement |
 |------------|-------------------|
-| No CI/CD pipeline | Add GitHub Actions → CodeDeploy or ECR+ECS |
 | Manual AMI baking | Use HashiCorp Packer or AWS Image Builder |
 | Single-region | Add Route 53 latency routing + multi-region replica |
 | No caching layer | Add ElastiCache (Redis) for session/query caching |

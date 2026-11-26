@@ -1,0 +1,19 @@
+# .gitleaks.toml — Shift-Left Secret Scanning Configuration
+title = "Manara AWS App Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist documentation and mock test fixtures"
+paths = [
+  '''\.env\.example$''',
+  '''terraform\.tfvars\.example$''',
+  '''documentation/.*''',
+  '''tests/.*'''
+]
+regexes = [
+  '''CHANGE_ME_USE_SECRETS_MANAGER''',
+  '''LocalDevOnly_ChangeForProd_2024!''',
+  '''change-this-to-a-long-random-secret-key'''
+]

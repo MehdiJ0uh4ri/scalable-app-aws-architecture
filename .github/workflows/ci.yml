@@ -1,0 +1,181 @@
+name: CI & Shift-Left Security
+
+on:
+  push:
+    branches: [ main, 'feature/**', 'fix/**' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =========================================================================
+  # 1. SHIFT-LEFT SECURITY SCANNING (Secrets, SAST, SCA, IaC)
+  # =========================================================================
+  security-scan:
+    name: Shift-Left Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history required for secret scanning
+
+      # --- A. Secret Leak Detection ---
+      - name: Run Gitleaks Secret Detection
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+      # --- B. Python SAST & SCA Setup ---
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Security Scanners
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit
+
+      # --- C. Python SAST (Static Application Security Testing) ---
+      - name: Run Bandit Python SAST
+        run: |
+          bandit -r application/app -ll -ii --format screen
+
+      # --- D. Python Dependency SCA (Software Composition Analysis) ---
+      - name: Run pip-audit Dependency Vulnerability Scan
+        run: |
+          pip-audit -r application/requirements.txt
+
+      # --- E. IaC Misconfiguration & Compliance Scan (Trivy) ---
+      - name: Run Trivy IaC Security Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform/'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0' # Non-blocking on informational, logs alerts in step
+
+  # =========================================================================
+  # 2. APPLICATION QUALITY & UNIT TESTS
+  # =========================================================================
+  app-tests:
+    name: Python Lint, Tests & Coverage Gate
+    needs: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Application Dependencies
+        working-directory: application
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Flake8 Code Quality Linter
+        working-directory: application
+        run: |
+          flake8 app tests --max-line-length=120 --exclude=__pycache__,.venv
+
+      - name: Run Pytest with Coverage Gate (Minimum 80%)
+        working-directory: application
+        run: |
+          pytest -v --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # =========================================================================
+  # 3. TERRAFORM VALIDATION & SPECULATIVE PLAN
+  # =========================================================================
+  terraform-check:
+    name: Terraform Lint, Validate & Plan
+    needs: security-scan
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'eu-west-3' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.5'
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Configure AWS Credentials
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      # Generate speculative plan for Pull Requests when credentials are available
+      - name: Terraform Plan (Speculative)
+        id: plan
+        if: github.event_name == 'pull_request' && secrets.AWS_ACCESS_KEY_ID != ''
+        working-directory: terraform
+        env:
+          TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD || 'DummyCiPassword123!' }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_nat_gateway_enabled: false
+        run: |
+          terraform plan -no-color -out=tfplan.out 2>&1 | tee plan_output.txt
+
+      - name: Comment Plan Summary on Pull Request
+        if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/plan_output.txt', 'utf8');
+            const truncatedPlan = planOutput.length > 60000 ? planOutput.substring(0, 60000) + '\n... [Truncated]' : planOutput;
+            
+            const commentBody = `### 🌐 Terraform Speculative Plan Result
+            
+            **Commit:** \`${{ github.sha }}\`
+            **Region:** \`${{ env.AWS_REGION }}\`
+            
+            <details><summary>Click to expand Terraform Plan Output</summary>
+            
+            \`\`\`hcl
+            ${truncatedPlan}
+            \`\`\`
+            
+            </details>
+            
+            *Plan generated automatically by GitHub Actions Shift-Left CI.*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });

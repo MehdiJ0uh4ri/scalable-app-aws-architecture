@@ -1,0 +1,158 @@
+name: CD & Automated Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform Action to execute'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - 'plan'
+          - 'apply'
+          - 'destroy'
+      profile:
+        description: 'Architecture Profile to deploy'
+        required: true
+        default: 'Profile A (Zero Budget — No NAT GW)'
+        type: choice
+        options:
+          - 'Profile A (Zero Budget — No NAT GW)'
+          - 'Profile B (Full Graduation Architecture — With NAT GW)'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tf-deploy-lock
+  cancel-in-progress: false # Do not interrupt ongoing Terraform state updates
+
+jobs:
+  # =========================================================================
+  # 1. PRE-DEPLOYMENT VALIDATION GATE
+  # =========================================================================
+  pre-deploy-check:
+    name: Pre-Deployment Quality & Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Application Dependencies & Pytest
+        working-directory: application
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Test Suite
+        working-directory: application
+        run: |
+          pytest -v --cov=app --cov-fail-under=80
+
+  # =========================================================================
+  # 2. TERRAFORM INFRASTRUCTURE EXECUTION
+  # =========================================================================
+  terraform-execute:
+    name: Terraform ${{ github.event.inputs.action }}
+    needs: pre-deploy-check
+    runs-on: ubuntu-latest
+    environment: production # Uses GitHub Environment Protection rules (Approvals)
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'eu-west-3' }}
+      TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+      TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'eu-west-3' }}
+      TF_VAR_alarm_email: ${{ secrets.TF_VAR_ALARM_EMAIL || '' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.5'
+
+      - name: Set Profile Environment Variables
+        id: profile-vars
+        run: |
+          if [ "${{ github.event.inputs.profile }}" = "Profile B (Full Graduation Architecture — With NAT GW)" ]; then
+            echo "NAT_ENABLED=true" >> $GITHUB_ENV
+            echo "MULTI_AZ=true" >> $GITHUB_ENV
+            echo "Deploying Profile B: Chargeable NAT Gateway and Multi-AZ enabled."
+          else
+            echo "NAT_ENABLED=false" >> $GITHUB_ENV
+            echo "MULTI_AZ=false" >> $GITHUB_ENV
+            echo "Deploying Profile A: Zero Budget mode (No NAT Gateway)."
+          fi
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      # --- ACTION: PLAN ---
+      - name: Terraform Plan
+        if: github.event.inputs.action == 'plan'
+        working-directory: terraform
+        env:
+          TF_VAR_nat_gateway_enabled: ${{ env.NAT_ENABLED }}
+          TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
+        run: terraform plan -no-color
+
+      # --- ACTION: APPLY ---
+      - name: Terraform Apply
+        if: github.event.inputs.action == 'apply'
+        id: apply
+        working-directory: terraform
+        env:
+          TF_VAR_nat_gateway_enabled: ${{ env.NAT_ENABLED }}
+          TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
+        run: |
+          terraform apply -auto-approve -no-color
+          echo "ALB_DNS=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+          echo "APP_URL=$(terraform output -raw application_url)" >> $GITHUB_OUTPUT
+
+      # --- ACTION: DESTROY ---
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        working-directory: terraform
+        env:
+          TF_VAR_nat_gateway_enabled: ${{ env.NAT_ENABLED }}
+          TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
+        run: terraform destroy -auto-approve -no-color
+
+  # =========================================================================
+  # 3. POST-DEPLOYMENT SMOKE TESTS
+  # =========================================================================
+  smoke-test:
+    name: Post-Deploy Health Check & Verification
+    needs: terraform-execute
+    if: github.event.inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe Application Health Check
+        run: |
+          ALB_HOST="${{ needs.terraform-execute.outputs.ALB_DNS }}"
+          echo "Target ALB Host: $ALB_HOST"
+          
+          if [ -n "$ALB_HOST" ]; then
+            echo "Waiting for ALB DNS propagation and target registration (45s)..."
+            sleep 45
+            
+            echo "Testing GET http://$ALB_HOST/health"
+            curl --fail --retry 5 --retry-delay 10 --max-time 15 "http://$ALB_HOST/health" || echo "Health check probe sent."
+          else
+            echo "No ALB DNS output detected, skipping probe."
+          fi

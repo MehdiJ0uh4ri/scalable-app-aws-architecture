@@ -3,7 +3,6 @@ application/tests/test_config.py
 Configuration validation tests.
 """
 
-import os
 import pytest
 from app.config import config_map, DevelopmentConfig, TestingConfig, ProductionConfig
 

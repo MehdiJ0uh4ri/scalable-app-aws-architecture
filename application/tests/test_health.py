@@ -3,8 +3,6 @@ application/tests/test_health.py
 Tests for the /health and /info endpoints.
 """
 
-import pytest
-
 
 class TestHealthEndpoint:
     """Tests for GET /health"""

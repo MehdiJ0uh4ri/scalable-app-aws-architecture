@@ -3,8 +3,6 @@ application/tests/test_tasks.py
 API endpoint tests for the /api/tasks resource.
 """
 
-import pytest
-
 
 class TestListTasks:
     """GET /api/tasks"""

@@ -3,7 +3,6 @@ application/tests/test_models.py
 Unit tests for the Task model and its serialisation.
 """
 
-import pytest
 from app.models.task import Task, TaskStatus
 
 

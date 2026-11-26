@@ -16,8 +16,8 @@ Any healthy EC2 instance behind the ALB can process any request.
 
 import logging
 
-from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from app import db
 from app.models.task import Task, TaskStatus
