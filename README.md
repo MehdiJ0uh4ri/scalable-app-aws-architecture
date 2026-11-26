@@ -281,7 +281,8 @@ pytest -v
 ### Option A: Secure GitHub Actions CI/CD (Recommended)
 This repository includes a production-style **Shift-Left Security** CI/CD pipeline:
 - **`ci.yml`**: Triggers on pull requests to run **Gitleaks** (secret detection), **Bandit** (Python SAST), **pip-audit** (dependency CVE scanning), **Trivy** (IaC security), and automated **Pytest** (with minimum 80% coverage gate).
-- **`deploy.yml`**: Manual workflow dispatch with GitHub Environment approval gates (`production`), architecture profile selector (`Profile A` vs `Profile B`), and automated post-deployment health check probes.
+- **`deploy.yml`**: Manual workflow dispatch with GitHub Environment approval gates (`production`), architecture profile selector (`Profile A` vs `Profile B`), and automated post-deployment health check probes. Infrastructure remains live for testing and taking screenshots.
+- **`destroy.yml`**: Dedicated manual teardown workflow with an explicit safety confirmation (`DESTROY`) to tear down all resources when you are done.
 
 See [documentation/cicd-pipeline.md](documentation/cicd-pipeline.md) for GitHub Secrets and pipeline configuration.
 

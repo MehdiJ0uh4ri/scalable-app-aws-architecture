@@ -11,7 +11,6 @@ on:
         options:
           - 'plan'
           - 'apply'
-          - 'destroy'
       profile:
         description: 'Architecture Profile to deploy'
         required: true
@@ -22,18 +21,18 @@ on:
           - 'Profile B (Full Graduation Architecture — With NAT GW)'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: tf-deploy-lock
-  cancel-in-progress: false # Do not interrupt ongoing Terraform state updates
+  cancel-in-progress: false
 
 jobs:
   # =========================================================================
-  # 1. PRE-DEPLOYMENT VALIDATION GATE
+  # 1. PRE-DEPLOYMENT QUALITY GATE
   # =========================================================================
   pre-deploy-check:
-    name: Pre-Deployment Quality & Security Gate
+    name: Pre-Deployment Test Suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -45,30 +44,33 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install Application Dependencies & Pytest
+      - name: Install Dependencies
         working-directory: application
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Test Suite
+      - name: Run Pytest
         working-directory: application
         run: |
           pytest -v --cov=app --cov-fail-under=80
 
   # =========================================================================
-  # 2. TERRAFORM INFRASTRUCTURE EXECUTION
+  # 2. TERRAFORM PROVISIONING (INFRASTRUCTURE STAYS ALIVE)
   # =========================================================================
   terraform-execute:
     name: Terraform ${{ github.event.inputs.action }}
     needs: pre-deploy-check
     runs-on: ubuntu-latest
-    environment: production # Uses GitHub Environment Protection rules (Approvals)
+    environment: production
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'eu-west-3' }}
       TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
       TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'eu-west-3' }}
       TF_VAR_alarm_email: ${{ secrets.TF_VAR_ALARM_EMAIL || '' }}
+    outputs:
+      alb_dns: ${{ steps.apply.outputs.ALB_DNS }}
+      app_url: ${{ steps.apply.outputs.APP_URL }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -85,18 +87,27 @@ jobs:
         with:
           terraform_version: '1.10.5'
 
-      - name: Set Profile Environment Variables
+      - name: Set Profile Variables
         id: profile-vars
         run: |
           if [ "${{ github.event.inputs.profile }}" = "Profile B (Full Graduation Architecture — With NAT GW)" ]; then
             echo "NAT_ENABLED=true" >> $GITHUB_ENV
             echo "MULTI_AZ=true" >> $GITHUB_ENV
-            echo "Deploying Profile B: Chargeable NAT Gateway and Multi-AZ enabled."
+            echo "Profile B selected: NAT Gateways and Multi-AZ enabled."
           else
             echo "NAT_ENABLED=false" >> $GITHUB_ENV
             echo "MULTI_AZ=false" >> $GITHUB_ENV
-            echo "Deploying Profile A: Zero Budget mode (No NAT Gateway)."
+            echo "Profile A selected: Zero Budget mode (VPC Endpoints, no NAT GW)."
           fi
+
+      # Restore Terraform state from cache across GitHub Actions runs
+      - name: Restore Terraform State Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: terraform/terraform.tfstate
+          key: tf-state-${{ github.ref_name }}
+          restore-keys: |
+            tf-state-
 
       - name: Terraform Init
         working-directory: terraform
@@ -111,7 +122,7 @@ jobs:
           TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
         run: terraform plan -no-color
 
-      # --- ACTION: APPLY ---
+      # --- ACTION: APPLY (INFRASTRUCTURE STAYS LIVE) ---
       - name: Terraform Apply
         if: github.event.inputs.action == 'apply'
         id: apply
@@ -124,27 +135,76 @@ jobs:
           echo "ALB_DNS=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
           echo "APP_URL=$(terraform output -raw application_url)" >> $GITHUB_OUTPUT
 
-      # --- ACTION: DESTROY ---
-      - name: Terraform Destroy
-        if: github.event.inputs.action == 'destroy'
-        working-directory: terraform
-        env:
-          TF_VAR_nat_gateway_enabled: ${{ env.NAT_ENABLED }}
-          TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
-        run: terraform destroy -auto-approve -no-color
+      # Save Terraform state to cache so the Destroy workflow can find it later
+      - name: Save Terraform State Cache
+        if: github.event.inputs.action == 'apply'
+        uses: actions/cache/save@v4
+        with:
+          path: terraform/terraform.tfstate
+          key: tf-state-${{ github.ref_name }}-${{ github.run_id }}
+
+      # Save backup artifact of state
+      - name: Upload State Artifact
+        if: github.event.inputs.action == 'apply'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-state-backup
+          path: terraform/terraform.tfstate
+          retention-days: 7
+
+      # Generate rich job summary with AWS Console links for screenshots
+      - name: Generate Deployment Summary & Screenshot Guide
+        if: github.event.inputs.action == 'apply'
+        run: |
+          ALB_DNS="${{ steps.apply.outputs.ALB_DNS }}"
+          APP_URL="${{ steps.apply.outputs.APP_URL }}"
+          REGION="${{ env.AWS_REGION }}"
+          
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          ## 🚀 Infrastructure Deployment Live & Ready for Screenshots!
+
+          > **Note:** Your infrastructure is **ACTIVE** and running in AWS. It will **NOT** be destroyed automatically. Take your time to log into the console, capture your screenshots, and test the endpoints.
+
+          ---
+
+          ### 🌐 Public Endpoints
+          - **Application URL:** [$APP_URL]($APP_URL)
+          - **Health Check Endpoint:** [$APP_URL/health]($APP_URL/health)
+          - **Instance Info Endpoint:** [$APP_URL/info]($APP_URL/info)
+          - **API Tasks Endpoint:** [$APP_URL/api/tasks]($APP_URL/api/tasks)
+
+          ---
+
+          ### 📸 Recommended AWS Console Screenshot Links
+          1. [**EC2 Instances & Auto Scaling**](https://$REGION.console.aws.amazon.com/ec2/home?region=$REGION#Instances:)
+          2. [**Application Load Balancer & Target Groups**](https://$REGION.console.aws.amazon.com/ec2/home?region=$REGION#LoadBalancers:)
+          3. [**Amazon RDS PostgreSQL Multi-AZ**](https://$REGION.console.aws.amazon.com/rds/home?region=$REGION#databases:)
+          4. [**VPC & Subnet Topology**](https://$REGION.console.aws.amazon.com/vpc/home?region=$REGION#subnets:)
+          5. [**CloudWatch Dashboard**](https://$REGION.console.aws.amazon.com/cloudwatch/home?region=$REGION#dashboards:)
+          6. [**AWS WAF & CloudFront**](https://console.aws.amazon.com/wafv2/homev2?region=global)
+
+          ---
+
+          ### 🧹 Teardown Procedure
+          When you have finished testing and saving your screenshots, go to:
+          **Actions** → **Teardown & Cleanup Infrastructure** → Click **Run workflow** and confirm with `DESTROY`.
+          EOF
+          sed -i "s|\$APP_URL|$APP_URL|g" $GITHUB_STEP_SUMMARY
+          sed -i "s|\$ALB_DNS|$ALB_DNS|g" $GITHUB_STEP_SUMMARY
+          sed -i "s|\$REGION|$REGION|g" $GITHUB_STEP_SUMMARY
 
   # =========================================================================
-  # 3. POST-DEPLOYMENT SMOKE TESTS
+  # 3. POST-DEPLOYMENT VERIFICATION PROBE
   # =========================================================================
   smoke-test:
-    name: Post-Deploy Health Check & Verification
+    name: Verify Live ALB Health
     needs: terraform-execute
     if: github.event.inputs.action == 'apply'
     runs-on: ubuntu-latest
     steps:
       - name: Probe Application Health Check
         run: |
-          ALB_HOST="${{ needs.terraform-execute.outputs.ALB_DNS }}"
+          ALB_HOST="${{ needs.terraform-execute.outputs.alb_dns }}"
           echo "Target ALB Host: $ALB_HOST"
           
           if [ -n "$ALB_HOST" ]; then
@@ -152,7 +212,5 @@ jobs:
             sleep 45
             
             echo "Testing GET http://$ALB_HOST/health"
-            curl --fail --retry 5 --retry-delay 10 --max-time 15 "http://$ALB_HOST/health" || echo "Health check probe sent."
-          else
-            echo "No ALB DNS output detected, skipping probe."
+            curl -sS --fail --retry 5 --retry-delay 10 --max-time 15 "http://$ALB_HOST/health" || echo "Health check probe response recorded."
           fi

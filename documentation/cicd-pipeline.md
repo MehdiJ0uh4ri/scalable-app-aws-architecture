@@ -9,24 +9,19 @@ This repository implements a **Shift-Left Security CI/CD Pipeline** using GitHub
 │                           GitHub Actions Workflow Suite                         │
 └──────────────────────────────────────┬──────────────────────────────────────────┘
                                        │
-            ┌──────────────────────────┴──────────────────────────┐
-            ▼                                                     ▼
-┌───────────────────────────────────────┐   ┌──────────────────────────────────────────┐
-│   ci.yml (Pull Requests & Pushes)     │   │   deploy.yml (Workflow Dispatch)         │
-├───────────────────────────────────────┤   ├──────────────────────────────────────────┤
-│ 1. Shift-Left Security Gate           │   │ 1. Pre-Deployment Quality Gate           │
-│    ├── Gitleaks (Secret Scanning)     │   │    └── Pytest (Min 80% Coverage)         │
-│    ├── Bandit (Python SAST)           │   │ 2. Production Approval Gate              │
-│    ├── pip-audit (Dependency SCA)     │   │    └── GitHub Environment Sign-off       │
-│    └── Trivy (IaC Misconfigurations)  │   │ 3. Terraform Execution Engine            │
-│ 2. Python Quality & Unit Tests        │   │    ├── Profile Selection (A vs B)        │
-│    ├── Flake8 Code Style              │   │    └── Actions: plan / apply / destroy   │
-│    └── Pytest (Coverage Gate >= 80%)  │   │ 4. Post-Deploy Verification              │
-│ 3. Terraform Lint & Speculative Plan  │   │    └── Automated ALB /health Probe       │
-│    ├── terraform fmt -check           │   └──────────────────────────────────────────┘
-│    ├── terraform validate             │
-│    └── PR Plan Comment Bot            │
-└───────────────────────────────────────┘
+            ┌──────────────────────────┼──────────────────────────┐
+            ▼                          ▼                          ▼
+┌───────────────────────┐  ┌──────────────────────────┐  ┌────────────────────────────┐
+│        ci.yml         │  │        deploy.yml        │  │        destroy.yml         │
+│ (Pull Requests/Push)  │  │   (Manual Deployment)    │  │     (Manual Teardown)      │
+├───────────────────────┤  ├──────────────────────────┤  ├────────────────────────────┤
+│ 1. Gitleaks (Secrets) │  │ 1. Pytest Quality Gate   │  │ 1. Confirm 'DESTROY' Check │
+│ 2. Bandit (SAST)      │  │ 2. Production Sign-off   │  │ 2. Restore State Cache     │
+│ 3. pip-audit (SCA)    │  │ 3. Terraform Apply       │  │ 3. Terraform Destroy       │
+│ 4. Trivy (IaC Scan)   │  │ 4. Persist State Cache   │  │ 4. Complete Clean-up Log   │
+│ 5. Pytest (Min 80%)   │  │ 5. Output Screenshot URLs│  └────────────────────────────┘
+│ 6. Speculative Plan   │  │    (Infrastructure Live) │
+└───────────────────────┘  └──────────────────────────┘
 ```
 
 ---
@@ -76,21 +71,29 @@ When someone triggers a deployment to `apply`, GitHub will pause execution and n
 
 ---
 
-## 5. How to Deploy via CI/CD
+## 5. How to Deploy & Teardown via CI/CD
 
-The deployment pipeline is triggered manually via **GitHub Actions Workflow Dispatch**:
-
+### Deploying Infrastructure (Keeps Infrastructure Live for Screenshots)
 1. In GitHub, navigate to the **Actions** tab.
 2. Select **CD & Automated Deployment** in the left sidebar.
 3. Click **Run workflow**:
    - **Terraform Action:**
      - `plan` — Generates and previews the Terraform plan without making changes.
-     - `apply` — Deploys the infrastructure to AWS and runs health checks.
-     - `destroy` — Tears down all resources for cleanup.
+     - `apply` — Deploys the infrastructure to AWS.
    - **Architecture Profile:**
      - `Profile A (Zero Budget — No NAT GW)` — Dev profile; avoids NAT Gateway charges.
      - `Profile B (Full Graduation Architecture — With NAT GW)` — Full multi-AZ graduation topology.
 4. Click **Run workflow**.
+5. Once complete, click the workflow run to view the **Job Summary**: it provides direct links to the live ALB and all AWS Console pages for capturing your screenshots!
+
+### Tearing Down Infrastructure (Manual Cleanup Button)
+When you have finished testing and saving your screenshots:
+1. In GitHub, navigate to the **Actions** tab.
+2. Select **Teardown & Cleanup Infrastructure** in the left sidebar.
+3. Click **Run workflow**:
+   - **Profile:** Select the profile you previously deployed (`Profile A` or `Profile B`).
+   - **Type DESTROY to confirm:** Type `DESTROY` in capital letters.
+4. Click **Run workflow** — Terraform destroys all created resources, leaving $0 ongoing cost.
 
 ---
 

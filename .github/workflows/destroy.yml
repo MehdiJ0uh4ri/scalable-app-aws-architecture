@@ -1,0 +1,108 @@
+name: Teardown & Cleanup Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Architecture Profile to destroy'
+        required: true
+        default: 'Profile A (Zero Budget — No NAT GW)'
+        type: choice
+        options:
+          - 'Profile A (Zero Budget — No NAT GW)'
+          - 'Profile B (Full Graduation Architecture — With NAT GW)'
+      confirm_destroy:
+        description: 'Type DESTROY in all caps to confirm irreversible deletion'
+        required: true
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tf-deploy-lock
+  cancel-in-progress: false
+
+jobs:
+  # =========================================================================
+  # MANUAL TEARDOWN WITH EXPLICIT CONFIRMATION BUTTON
+  # =========================================================================
+  terraform-destroy:
+    name: Terraform Destroy (Manual Safety Gate)
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'eu-west-3' }}
+      TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD || 'DummyDestroyPassword123!' }}
+      TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'eu-west-3' }}
+      TF_VAR_alarm_email: ${{ secrets.TF_VAR_ALARM_EMAIL || '' }}
+    steps:
+      - name: Validate Confirmation Phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "::error::Teardown aborted! Confirmation phrase was '${{ github.event.inputs.confirm_destroy }}' instead of 'DESTROY'."
+            exit 1
+          fi
+          echo "Teardown confirmed. Proceeding to destroy infrastructure."
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.5'
+
+      - name: Set Profile Variables
+        id: profile-vars
+        run: |
+          if [ "${{ github.event.inputs.profile }}" = "Profile B (Full Graduation Architecture — With NAT GW)" ]; then
+            echo "NAT_ENABLED=true" >> $GITHUB_ENV
+            echo "MULTI_AZ=true" >> $GITHUB_ENV
+          else
+            echo "NAT_ENABLED=false" >> $GITHUB_ENV
+            echo "MULTI_AZ=false" >> $GITHUB_ENV
+          fi
+
+      # Restore Terraform state from cache
+      - name: Restore Terraform State Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: terraform/terraform.tfstate
+          key: tf-state-${{ github.ref_name }}
+          restore-keys: |
+            tf-state-
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        env:
+          TF_VAR_nat_gateway_enabled: ${{ env.NAT_ENABLED }}
+          TF_VAR_db_multi_az: ${{ env.MULTI_AZ }}
+        run: terraform destroy -auto-approve -no-color
+
+      - name: Teardown Summary
+        run: |
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          ## 🧹 Infrastructure Teardown Complete
+
+          All AWS resources managed by Terraform have been destroyed:
+          - EC2 Instances & Auto Scaling Group terminated
+          - Application Load Balancer & Target Groups deleted
+          - RDS PostgreSQL database instance removed
+          - NAT Gateways released & VPC subnets cleaned up
+          - CloudWatch Dashboards & Alarms removed
+
+          Zero ongoing AWS charges will be incurred.
+          EOF
