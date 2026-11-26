@@ -142,7 +142,7 @@ jobs:
       # Generate speculative plan for Pull Requests when credentials are available
       - name: Terraform Plan (Speculative)
         id: plan
-        if: github.event_name == 'pull_request' && env.AWS_ACCESS_KEY_ID != ''
+      #if:github.event_name == 'pull_request' && env.AWS_ACCESS_KEY_ID != ''
         working-directory: terraform
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD || 'DummyCiPassword123!' }}
