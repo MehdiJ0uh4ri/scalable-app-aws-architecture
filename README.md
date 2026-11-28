@@ -3,6 +3,8 @@
 **AWS Solutions Architect Associate Graduation Project**
 **Region:** eu-west-3 (Paris) | **Tech Stack:** Python Flask · PostgreSQL · Terraform · AWS
 
+> **Project evidence:** [Test results and AWS deployment evidence](documentation/testing-results.md), including the current test status and console screenshots.
+
 ---
 
 ## 📋 Table of Contents

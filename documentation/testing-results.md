@@ -9,7 +9,8 @@
 | Python | 3.12.8 |
 | Flask | 3.1.1 |
 | Database | SQLite (in-memory, testing mode) |
-| AWS Deployed | No (Profile A — local only) |
+| AWS Resources | Partially evidenced in AWS Console screenshots (2026-11-26) |
+| Application Runtime | Not verified |
 
 ---
 
@@ -110,21 +111,23 @@ terraform validate
 
 ---
 
-## Infrastructure Tests (Pending AWS Deployment)
+## AWS Deployment Evidence
 
-The following tests require Profile B to be deployed and are **not yet executed**.
+AWS Console screenshots show resources present in `eu-west-3` and the CloudFront/WAF global console on 2026-11-26. They confirm that some infrastructure resources existed at capture time; they do not prove application availability or successful end-to-end behavior.
 
-| Test | Method | Status |
-|------|--------|--------|
-| ALB health check routing | `aws elbv2 describe-target-health` | ⏳ Pending |
-| Auto Scaling scale-out | Load test with Locust, observe ASG | ⏳ Pending |
-| Instance replacement | Terminate instance manually, observe replacement | ⏳ Pending |
-| Load balancing across AZs | Check `/info` for different `instance_id` / `availability_zone` | ⏳ Pending |
-| DB connectivity | Connect via SSM Session Manager, run psql | ⏳ Pending |
-| RDS failover | Reboot with forced failover, measure downtime | ⏳ Pending |
-| WAF rate limiting | Send >2000 req/5min, verify 403 | ⏳ Pending |
-| CloudWatch alarm | Trigger CPU alarm, verify SNS email | ⏳ Pending |
-| Security group isolation | Attempt direct EC2 access, verify blocked | ⏳ Pending |
+See the [AWS deployment evidence gallery](aws-deployment-evidence.md) for the screenshots.
+
+| Verification | Observed result |
+|--------------|-----------------|
+| VPC and subnet resources | AWS Console inventories show available VPCs and subnets in `eu-west-3`. See [VPCs](Screenshots/vpc-inventory-eu-west-3.png) and [subnets](Screenshots/subnets-eu-west-3.png). |
+| Application Load Balancer | One internet-facing application load balancer is shown as active. Target health and application health-check responses are not shown. See [ALB screenshot](Screenshots/alb-eu-west-3.png). |
+| IAM roles | The console shows the project EC2 role and RDS monitoring role. See [IAM screenshot](Screenshots/iam-roles-global.png). |
+| Database secret | A project database secret is listed in Secrets Manager; its value is not shown. Database connectivity is not demonstrated. See [Secrets Manager screenshot](Screenshots/secrets-manager-eu-west-3.png). |
+| CloudFront | A distribution is shown as active. A successful request through it is not demonstrated. See [CloudFront screenshot](Screenshots/cloudfront-distribution-global.png). |
+| AWS WAF | Regional and global Web ACLs are visible. A rate-limit test or blocked response is not demonstrated. See [regional WAF](Screenshots/waf-acls-eu-west-3.png) and [global WAF](Screenshots/waf-global-acl-us-east-1.png). |
+| CloudWatch | Application-related log groups are listed. Log ingestion, alarms, and notifications are not demonstrated. See [CloudWatch screenshot](Screenshots/cloudwatch-log-groups-eu-west-3.png). |
+
+
 
 ---
 
